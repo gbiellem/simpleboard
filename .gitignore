@@ -5,8 +5,9 @@
 supabase/.temp/
 supabase/.branches/
 
-# Claude Code local (per-machine) settings
+# Claude Code local (per-machine) settings and session state
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 
 # Personal Supabase project values (URL/key) for local testing -- see README
 unity-client/local-config.md

@@ -1,6 +1,5 @@
 using System;
 using System.Collections;
-using System.Collections.Generic;
 using System.Text;
 using UnityEngine;
 using UnityEngine.Networking;
@@ -134,41 +133,6 @@ namespace SimpleBoard
                 onError));
         }
 
-        /// <summary>
-        /// Resolves steam_ids to Steam persona names via the get-player-names Edge
-        /// Function (keeps the Steam Web API key server-side). Ids missing from the
-        /// result -- e.g. a private profile -- are simply absent from the dictionary.
-        /// </summary>
-        public void GetPlayerNames(ulong[] steamIds, Action<Dictionary<ulong, string>> onSuccess, Action<string> onError)
-        {
-            if (steamIds == null || steamIds.Length == 0)
-            {
-                onSuccess?.Invoke(new Dictionary<ulong, string>());
-                return;
-            }
-
-            var idStrings = new string[steamIds.Length];
-            for (int i = 0; i < steamIds.Length; i++)
-                idStrings[i] = steamIds[i].ToString();
-
-            var body = new PlayerNamesRequest { steam_ids = idStrings };
-            StartCoroutine(PostJson(
-                $"{FunctionsBase}/get-player-names",
-                JsonUtility.ToJson(body),
-                json =>
-                {
-                    var entries = JsonHelper.FromJson<PlayerNameEntry>(json);
-                    var map = new Dictionary<ulong, string>(entries.Length);
-                    foreach (var entry in entries)
-                    {
-                        if (ulong.TryParse(entry.steam_id, out var id))
-                            map[id] = entry.persona_name;
-                    }
-                    onSuccess?.Invoke(map);
-                },
-                onError));
-        }
-
         // ---------------------------------------------------------------
         // Internals
         // ---------------------------------------------------------------
@@ -238,8 +202,6 @@ namespace SimpleBoard
         [Serializable] private class LimitRequest { public int p_limit; }
         [Serializable] private class SeedLimitRequest { public int p_seed_id; public int p_limit; }
         [Serializable] private class SeedRankRequest { public ulong p_steam_id; public int p_seed_id; }
-        [Serializable] private class PlayerNamesRequest { public string[] steam_ids; }
-        [Serializable] private class PlayerNameEntry { public string steam_id; public string persona_name; }
         [Serializable] private class EdgeFunctionError { public string error; }
         [Serializable] private class PostgrestError { public string message; }
     }
@@ -252,6 +214,8 @@ namespace SimpleBoard
         public int score;
         public long rank;
         public string achieved_at;
+        /// <summary>Persona name as of this player's last score submission; null if never captured.</summary>
+        public string persona_name;
     }
 
     [Serializable]
@@ -262,6 +226,8 @@ namespace SimpleBoard
         public int score;
         public long rank;
         public long total_players;
+        /// <summary>Persona name as of this player's last score submission; null if never captured.</summary>
+        public string persona_name;
     }
 
     [Serializable]

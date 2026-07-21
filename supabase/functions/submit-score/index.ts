@@ -2,9 +2,9 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 // Verifies a Steam auth ticket (from ISteamUser::GetAuthTicketForWebApi) against
-// the Steamworks Web API, then upserts the score under the *verified* steam_id.
-// This is the only write path into the scores table -- see submit_score() in the DB,
-// which is grantable to service_role only.
+// the Steamworks Web API, then upserts the score (and the player's current
+// persona name) under the *verified* steam_id via submit_score(), which is the
+// only write path into scores/players -- grantable to service_role only.
 
 const STEAM_WEB_API_KEY = Deno.env.get("STEAM_WEB_API_KEY");
 const STEAM_APP_ID = Deno.env.get("STEAM_APP_ID");
@@ -51,6 +51,24 @@ async function verifySteamTicket(ticketHex: string): Promise<SteamVerification> 
   return { steamId: String(params.steamid) };
 }
 
+// Best-effort: a failed lookup here should never block score submission --
+// submit_score() leaves the players row untouched if no name is supplied.
+async function fetchPersonaName(steamId: string): Promise<string | null> {
+  const url = new URL("https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/");
+  url.searchParams.set("key", STEAM_WEB_API_KEY!);
+  url.searchParams.set("steamids", steamId);
+
+  try {
+    const res = await fetch(url.toString());
+    if (!res.ok) return null;
+    const body = await res.json();
+    const player = body?.response?.players?.[0];
+    return typeof player?.personaname === "string" ? player.personaname : null;
+  } catch {
+    return null;
+  }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {
     return jsonResponse({ error: "Method not allowed" }, 405);
@@ -85,11 +103,17 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: verification.error }, 401);
   }
 
+  const personaName = await fetchPersonaName(verification.steamId);
+  if (personaName === null) {
+    console.error("Could not resolve persona name for", verification.steamId, "-- score will still be recorded");
+  }
+
   const { data, error } = await supabaseAdmin
     .rpc("submit_score", {
       p_steam_id: verification.steamId,
       p_seed_id: seed_id,
       p_score: score,
+      p_persona_name: personaName,
     })
     .single();
 

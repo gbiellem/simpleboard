@@ -10,13 +10,11 @@ This repo is a template, not a hosted service: it has no default Supabase projec
 Unity game (Steamworks.NET)
   |
   |-- reads (public, publishable key) -----> PostgREST RPC ---> Postgres functions
-  |
+  |                                                                (joins persona_name from players)
   `-- submit score (Steam auth ticket) ----> Edge Function "submit-score"
                                                 |-- verifies ticket against Steam Web API
+                                                |-- looks up persona name (GetPlayerSummaries, best-effort)
                                                 `-- calls submit_score() RPC as service_role
-
-Leaderboard UI (persona names)
-  `-- Edge Function "get-player-names" -----> Steam Web API (GetPlayerSummaries)
 ```
 
 Two separate trust layers:
@@ -25,7 +23,7 @@ Two separate trust layers:
 
 ## Database
 
-Single table, `public.scores`:
+`public.scores`:
 
 | column | type | notes |
 |---|---|---|
@@ -36,16 +34,28 @@ Single table, `public.scores`:
 
 `PRIMARY KEY (steam_id, seed_id)` — one row per player per seed.
 
-**RLS**: enabled, public `SELECT` only. No `INSERT`/`UPDATE`/`DELETE` grants for `anon`/`authenticated` — the table cannot be written to directly through the API at all. The only way in is `submit_score()`, and `EXECUTE` on that function is granted to `service_role` only (revoked from everyone else), so it's reachable exclusively from the `submit-score` Edge Function.
+`public.players`:
+
+| column | type | notes |
+|---|---|---|
+| `steam_id` | `bigint` | `PRIMARY KEY` |
+| `persona_name` | `text` | Steam display name as of the player's last score submission |
+| `updated_at` | `timestamptz` | |
+
+Populated only as a side effect of `submit_score()` — there's no standalone name-lookup endpoint. A player's name is whatever it was the last time they submitted a score to any seed; it doesn't update from a leaderboard view, and a score can exist with no matching `players` row if that submission's name lookup ever failed (the read functions `LEFT JOIN`, so this just shows up as `persona_name: null`, never a missing score).
+
+**RLS**: both tables have RLS enabled, public `SELECT` only. No `INSERT`/`UPDATE`/`DELETE` grants for `anon`/`authenticated` on either — nothing is writable directly through the API. The only way in is `submit_score()`, and `EXECUTE` on that function is granted to `service_role` only (revoked from everyone else), so it's reachable exclusively from the `submit-score` Edge Function.
 
 Four SQL functions (`supabase/migrations/`):
 
 | function | purpose | callable by |
 |---|---|---|
-| `submit_score(p_steam_id, p_seed_id, p_score)` | atomic upsert-if-higher via `INSERT ... ON CONFLICT ... WHERE`; no-op if the new score isn't higher | `service_role` only |
+| `submit_score(p_steam_id, p_seed_id, p_score, p_persona_name = null)` | atomically upserts the score only if it's higher, and the player's persona name unconditionally (skipped if `p_persona_name` is null) | `service_role` only |
 | `get_top_scores(p_limit = 10)` | top rows overall, across all seeds (same player can appear more than once) | `anon`, `authenticated` |
 | `get_seed_top_scores(p_seed_id, p_limit = 10)` | top rows for one seed | `anon`, `authenticated` |
 | `get_seed_rank(p_steam_id, p_seed_id)` | a player's `rank`/`score`/`total_players` for a seed; empty result if they haven't posted one | `anon`, `authenticated` |
+
+All three read functions return `persona_name` alongside their other columns.
 
 ## API reference
 
@@ -55,11 +65,17 @@ Base URL: `https://<project-ref>.supabase.co`. All requests need `apikey` and `A
 
 ```
 POST /rest/v1/rpc/get_top_scores          { "p_limit": 10 }
+-> [{ "steam_id": ..., "seed_id": 42, "score": 1500, "rank": 1, "achieved_at": "...", "persona_name": "..." }, ...]
+
 POST /rest/v1/rpc/get_seed_top_scores     { "p_seed_id": 42, "p_limit": 10 }
+-> same shape as above, filtered to one seed
+
 POST /rest/v1/rpc/get_seed_rank           { "p_steam_id": "76561197960287930", "p_seed_id": 42 }
+-> [{ "steam_id": ..., "seed_id": 42, "score": 1500, "rank": 3, "total_players": 12, "persona_name": "..." }]
+   (empty array if that player has no score for this seed)
 ```
 
-### Write (Edge Functions)
+### Write (Edge Function)
 
 ```
 POST /functions/v1/submit-score
@@ -67,11 +83,7 @@ POST /functions/v1/submit-score
 -> { "steam_id": ..., "seed_id": 42, "best_score": 1500, "is_new_best": true }
 ```
 
-```
-POST /functions/v1/get-player-names
-{ "steam_ids": ["76561197960287930", "76561197960287931"] }
--> [{ "steam_id": "76561197960287930", "persona_name": "..." }, ...]
-```
+The persona name shown in reads comes from here — `submit-score` looks it up via Steam's `GetPlayerSummaries` right after ticket verification and passes it to `submit_score()`. There's no separate name-lookup endpoint.
 
 ## Repo layout
 
@@ -80,8 +92,7 @@ supabase/
   config.toml
   migrations/            -- schema, functions, RLS (source of truth for the DB)
   functions/
-    submit-score/         -- Steam ticket verification + score upsert
-    get-player-names/      -- Steam persona name lookup
+    submit-score/         -- Steam ticket verification + score/persona-name upsert
 unity-client/
   SimpleBoardClient.cs     -- HTTP client (UnityWebRequest + coroutines), no Steam dependency
   SimpleBoardSteamAuth.cs  -- Steamworks.NET ticket bridge, feeds SimpleBoardClient.SubmitScore
@@ -100,15 +111,14 @@ supabase link --project-ref <project-ref>
 # Push schema/functions/RLS to the linked project
 supabase db push
 
-# Steam secrets — required before submit-score or get-player-names will work
+# Steam secrets — required before submit-score will work
 supabase secrets set STEAM_WEB_API_KEY=<key> STEAM_APP_ID=<appid>
 
-# Deploy both Edge Functions
+# Deploy the Edge Function
 supabase functions deploy submit-score
-supabase functions deploy get-player-names
 ```
 
-Without the two Steam secrets set, `submit-score` and `get-player-names` respond `500 Server misconfigured` rather than failing silently.
+Without the two Steam secrets set, `submit-score` responds `500 Server misconfigured` rather than failing silently.
 
 ## Unity client
 
@@ -120,7 +130,8 @@ SimpleBoardSteamAuth.Instance.SubmitScore(seedId: 42, score: 1500,
     onSuccess: result => Debug.Log($"Best: {result.best_score}, new best: {result.is_new_best}"),
     onError: err => Debug.LogError(err));
 
-// Reads work without Steam being initialized at all
+// Reads work without Steam being initialized at all -- entries[i].persona_name
+// reflects whatever name that player had at their last submission, may be null
 SimpleBoardClient.Instance.GetSeedTopScores(seedId: 42,
     onSuccess: entries => { /* ... */ },
     onError: err => Debug.LogError(err));
