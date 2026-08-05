@@ -46,6 +46,15 @@ Populated only as a side effect of `submit_score()` — there's no standalone na
 
 **RLS**: both tables have RLS enabled, public `SELECT` only. No `INSERT`/`UPDATE`/`DELETE` grants for `anon`/`authenticated` on either — nothing is writable directly through the API. The only way in is `submit_score()`, and `EXECUTE` on that function is granted to `service_role` only (revoked from everyone else), so it's reachable exclusively from the `submit-score` Edge Function.
 
+`public.polling`:
+
+| column | type | notes |
+|---|---|---|
+| `id` | `bigint` | `PRIMARY KEY`, identity |
+| `polled_at` | `timestamptz` | defaults to `now()` |
+
+Heartbeat table for the keep-alive Azure Function (see [Operations](#operations)) — unrelated to leaderboard data. RLS is enabled but, unlike `scores`/`players`, `anon`/`authenticated` have both `SELECT` and `INSERT` (no `UPDATE`/`DELETE`): the Function only holds the public publishable key, so it needs to write directly through PostgREST rather than through a service-role-gated function. A daily `pg_cron` job (`polling-daily-cleanup`) deletes all rows at midnight UTC — only the act of polling matters, not the history.
+
 Four SQL functions (`supabase/migrations/`):
 
 | function | purpose | callable by |
@@ -96,6 +105,8 @@ supabase/
 unity-client/
   SimpleBoardClient.cs     -- HTTP client (UnityWebRequest + coroutines), no Steam dependency
   SimpleBoardSteamAuth.cs  -- Steamworks.NET ticket bridge, feeds SimpleBoardClient.SubmitScore
+azure-functions/
+  PollingHeartbeat/        -- hourly keep-alive Function, see Operations
 ```
 
 ## Setup
@@ -148,5 +159,7 @@ The publishable key is safe to ship in a build (it identifies the project, not a
 
 ## Operations
 
-- **Free-tier pausing**: Supabase pauses projects after 7 days with no API activity, and does not auto-resume — a paused project needs a manual "Restore" in the Dashboard. A cron job on a always-on Raspberry Pi pings `get_top_scores` every 3 days to prevent this (script lives on the Pi, not in this repo). If the leaderboard ever looks dead, check whether the project got paused before debugging further.
+- **Free-tier pausing**: Supabase pauses projects after 7 days with no API activity, and does not auto-resume — a paused project needs a manual "Restore" in the Dashboard. An Azure Function (`azure-functions/PollingHeartbeat/`) pings the API every hour to prevent this: it inserts a row into `public.polling` and reads back the current rows via PostgREST, using only the public publishable key (no secrets needed in the Function's config). A `pg_cron` job (`polling-daily-cleanup`) wipes that table daily so it doesn't grow — only the act of polling matters, not the history. If the leaderboard ever looks dead, check whether the project got paused (and whether the Function is still deployed/running) before debugging further.
+
+  To deploy: create a Function App on the Consumption plan (any region), set app settings `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` (see `local.settings.json.example` in the Function's folder for the shape), then `func azure functionapp publish <app-name>` from `azure-functions/PollingHeartbeat/`.
 - **Security posture**: run `supabase db advisors` (or the `get_advisors` MCP tool) after any schema change — the project currently has zero open security/performance lints.

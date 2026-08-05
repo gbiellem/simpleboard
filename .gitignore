@@ -11,3 +11,14 @@ supabase/.branches/
 
 # Personal Supabase project values (URL/key) for local testing -- see README
 unity-client/local-config.md
+
+# Azure Functions build output and local secrets
+azure-functions/*/bin/
+azure-functions/*/obj/
+azure-functions/*/local.settings.json
+.claude
+.agents
+azure-functions/PollingHeartbeat/.idea
+.mcp.json
+skills-lock.json
+.agents
