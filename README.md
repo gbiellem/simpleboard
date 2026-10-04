@@ -53,7 +53,7 @@ Populated only as a side effect of `submit_score()` — there's no standalone na
 | `id` | `bigint` | `PRIMARY KEY`, identity |
 | `polled_at` | `timestamptz` | defaults to `now()` |
 
-Heartbeat table for the keep-alive Azure Function (see [Operations](#operations)) — unrelated to leaderboard data. RLS is enabled but, unlike `scores`/`players`, `anon`/`authenticated` have both `SELECT` and `INSERT` (no `UPDATE`/`DELETE`): the Function only holds the public publishable key, so it needs to write directly through PostgREST rather than through a service-role-gated function. A daily `pg_cron` job (`polling-daily-cleanup`) deletes all rows at midnight UTC — only the act of polling matters, not the history.
+Heartbeat table for the keep-alive poller (see [Operations](#operations)) — unrelated to leaderboard data. RLS is enabled but, unlike `scores`/`players`, `anon`/`authenticated` have both `SELECT` and `INSERT` (no `UPDATE`/`DELETE`): the poller only holds the public publishable key, so it needs to write directly through PostgREST rather than through a service-role-gated function. A daily `pg_cron` job (`polling-daily-cleanup`) deletes all rows at midnight UTC — only the act of polling matters, not the history.
 
 Four SQL functions (`supabase/migrations/`):
 
@@ -105,8 +105,9 @@ supabase/
 unity-client/
   SimpleBoardClient.cs     -- HTTP client (UnityWebRequest + coroutines), no Steam dependency
   SimpleBoardSteamAuth.cs  -- Steamworks.NET ticket bridge, feeds SimpleBoardClient.SubmitScore
+polling-heartbeat/         -- hourly keep-alive poller, Go + Docker option, see Operations
 azure-functions/
-  PollingHeartbeat/        -- hourly keep-alive Function, see Operations
+  PollingHeartbeat/        -- hourly keep-alive poller, Azure Function option, see Operations
 ```
 
 ## Setup
@@ -159,7 +160,9 @@ The publishable key is safe to ship in a build (it identifies the project, not a
 
 ## Operations
 
-- **Free-tier pausing**: Supabase pauses projects after 7 days with no API activity, and does not auto-resume — a paused project needs a manual "Restore" in the Dashboard. An Azure Function (`azure-functions/PollingHeartbeat/`) pings the API every hour to prevent this: it inserts a row into `public.polling` and reads back the current rows via PostgREST, using only the public publishable key (no secrets needed in the Function's config). A `pg_cron` job (`polling-daily-cleanup`) wipes that table daily so it doesn't grow — only the act of polling matters, not the history. If the leaderboard ever looks dead, check whether the project got paused (and whether the Function is still deployed/running) before debugging further.
+- **Free-tier pausing**: Supabase pauses projects after 7 days with no API activity, and does not auto-resume — a paused project needs a manual "Restore" in the Dashboard. To prevent this, run **one** hourly keep-alive poller, either the Azure Function or the Go/Docker service (same behavior, pick whichever suits your hosting; don't run both). Each inserts a row into `public.polling` and reads back the current rows via PostgREST, using only the public publishable key, and posts to an [ntfy.sh](https://ntfy.sh) topic if a poll fails. A `pg_cron` job (`polling-daily-cleanup`) wipes that table daily so it doesn't grow — only the act of polling matters, not the history. If the leaderboard ever looks dead, check whether the project got paused (and whether your poller is still running) before debugging further.
 
-  To deploy: create a Function App on the Consumption plan (any region), set app settings `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` (see `local.settings.json.example` in the Function's folder for the shape), then `func azure functionapp publish <app-name>` from `azure-functions/PollingHeartbeat/`.
+  **Option A — Azure Function** (`azure-functions/PollingHeartbeat/`): create a Function App on the Consumption plan (any region), set app settings `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` (see `local.settings.json.example` in the Function's folder for the shape), then `func azure functionapp publish <app-name>` from `azure-functions/PollingHeartbeat/`.
+
+  **Option B — Go + Docker** (`polling-heartbeat/`, ~5 MB `scratch` image, e.g. on a Raspberry Pi): copy the folder to the Docker host, `cp .env.example .env` and fill in `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` (`.env` is gitignored), then `docker compose up -d`. It polls at the top of every hour and once at startup so a bad config shows up immediately; the container uses `restart: unless-stopped` so it survives reboots. Check it with `docker compose logs`. The alert topic can be overridden with `NTFY_URL`.
 - **Security posture**: run `supabase db advisors` (or the `get_advisors` MCP tool) after any schema change — the project currently has zero open security/performance lints.
