@@ -14,8 +14,6 @@ namespace SimpleBoard.PollingHeartbeat;
 /// </summary>
 public class PollFunction
 {
-    private const string NtfyTopicUrl = "https://ntfy.sh/simpleboardalerts";
-
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<PollFunction> _logger;
 
@@ -32,6 +30,8 @@ public class PollFunction
             ?? throw new InvalidOperationException("SUPABASE_URL app setting is not configured.");
         var publishableKey = Environment.GetEnvironmentVariable("SUPABASE_PUBLISHABLE_KEY")
             ?? throw new InvalidOperationException("SUPABASE_PUBLISHABLE_KEY app setting is not configured.");
+        var ntfyTopicUrl = Environment.GetEnvironmentVariable("NTFY_URL")
+            ?? throw new InvalidOperationException("NTFY_URL app setting is not configured.");
 
         try
         {
@@ -54,17 +54,17 @@ public class PollFunction
         catch (Exception ex)
         {
             _logger.LogError(ex, "Polling heartbeat failed.");
-            await NotifyAsync($"SimpleBoard polling heartbeat failed: {ex.Message}");
+            await NotifyAsync(ntfyTopicUrl, $"SimpleBoard polling heartbeat failed: {ex.Message}");
             throw;
         }
     }
 
-    private async Task NotifyAsync(string message)
+    private async Task NotifyAsync(string ntfyTopicUrl, string message)
     {
         try
         {
             using var ntfyClient = _httpClientFactory.CreateClient();
-            await ntfyClient.PostAsync(NtfyTopicUrl, new StringContent(message, Encoding.UTF8));
+            await ntfyClient.PostAsync(ntfyTopicUrl, new StringContent(message, Encoding.UTF8));
         }
         catch (Exception notifyEx)
         {

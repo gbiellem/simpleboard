@@ -4,6 +4,7 @@
     "AzureWebJobsStorage": "UseDevelopmentStorage=true",
     "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
     "SUPABASE_URL": "https://<your-project-ref>.supabase.co",
-    "SUPABASE_PUBLISHABLE_KEY": "<your publishable (anon) key>"
+    "SUPABASE_PUBLISHABLE_KEY": "<your publishable (anon) key>",
+    "NTFY_URL": "https://ntfy.sh/<your-private-random-topic>"
   }
 }

@@ -19,17 +19,12 @@ import (
 	"time"
 )
 
-const defaultNtfyURL = "https://ntfy.sh/simpleboardalerts"
-
 var client = &http.Client{Timeout: 30 * time.Second}
 
 func main() {
 	supabaseURL := strings.TrimRight(mustEnv("SUPABASE_URL"), "/")
 	key := mustEnv("SUPABASE_PUBLISHABLE_KEY")
-	ntfyURL := os.Getenv("NTFY_URL")
-	if ntfyURL == "" {
-		ntfyURL = defaultNtfyURL
-	}
+	ntfyURL := mustEnv("NTFY_URL")
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
